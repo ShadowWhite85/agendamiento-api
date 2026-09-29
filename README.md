@@ -46,6 +46,14 @@ API REST en **.NET 10** con **Minimal APIs**, EF Core 10 y SQLite.
 | Contenedores | Docker multi-stage |
 | CI/CD | GitHub Actions (build + tests en cada push) |
 
+## 🌐 Demo en vivo
+
+| | URL |
+|---|---|
+| **API + Swagger** | https://agendamiento-api-jxfj.onrender.com/swagger |
+
+*La API puede tardar ~50 s en despertar la primera vez (plan gratuito de Render).*
+
 ## 🚀 Ejecutar en local
 
 ```bash
