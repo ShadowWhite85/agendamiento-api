@@ -1,0 +1,9 @@
+**/.git
+**/bin
+**/obj
+*.db
+*.db-*
+*.log
+.vs/
+.github/
+Agendamiento.Tests/

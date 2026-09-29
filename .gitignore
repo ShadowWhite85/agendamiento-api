@@ -1,0 +1,14 @@
+# .NET
+bin/
+obj/
+*.user
+.vs/
+*.db
+*.db-*
+
+# Herramientas de prueba
+.playwright-mcp/
+*.log
+
+# SO
+Thumbs.db

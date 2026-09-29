@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  dotnet:
+    name: API .NET 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+      - name: Restore
+        run: dotnet restore AgendamientoApi.slnx
+      - name: Build
+        run: dotnet build AgendamientoApi.slnx --no-restore --verbosity quiet
+      - name: Test
+        run: dotnet test AgendamientoApi.slnx --no-build --verbosity quiet
