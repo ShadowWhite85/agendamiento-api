@@ -1,9 +1,11 @@
 using System.Text;
+using System.Threading.RateLimiting;
 using Agendamiento.Api.Data;
 using Agendamiento.Api.Dtos;
 using Agendamiento.Api.Models;
 using Agendamiento.Api.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 
@@ -33,6 +35,13 @@ builder.Services.AddSwaggerGen(options =>
     });
 });
 
+// La clave JWT de producción llega por variable de entorno (Jwt__Key); la de appsettings es pública
+const string claveJwtDesarrollo = "clave-demo-desarrollo-agendamiento-api-2026-cambiar-en-produccion!";
+var claveJwt = builder.Configuration["Jwt:Key"]
+    ?? throw new InvalidOperationException("Falta la configuración Jwt:Key.");
+if (Encoding.UTF8.GetByteCount(claveJwt) < 32)
+    throw new InvalidOperationException("Jwt:Key debe tener al menos 32 bytes.");
+
 // Autenticación JWT
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
@@ -46,12 +55,32 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidIssuer = builder.Configuration["Jwt:Issuer"],
             ValidAudience = builder.Configuration["Jwt:Audience"],
             IssuerSigningKey = new SymmetricSecurityKey(
-                Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"]!))
+                Encoding.UTF8.GetBytes(claveJwt))
         };
     });
 
 builder.Services.AddAuthorization(options =>
     options.AddPolicy("SoloAdmin", policy => policy.RequireRole("Admin")));
+
+// Render/Cloudflare reenvían la IP real del visitante en X-Forwarded-For; sin esto todos
+// los visitantes parecerían venir de la IP del proxy (y compartirían el límite de login)
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    options.ForwardLimit = 1; // solo el último salto, el que agrega el proxy de la plataforma
+    options.KnownIPNetworks.Clear();
+    options.KnownProxies.Clear();
+});
+
+// Freno a ataques de fuerza bruta: intentos de login por minuto por IP (configurable para tests)
+var intentosLogin = builder.Configuration.GetValue("Seguridad:IntentosLoginPorMinuto", 5);
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddPolicy("login", contexto => RateLimitPartition.GetFixedWindowLimiter(
+        contexto.Connection.RemoteIpAddress?.ToString() ?? "desconocida",
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = intentosLogin, Window = TimeSpan.FromMinutes(1) }));
+});
 
 // CORS configurable: orígenes permitidos en appsettings
 var orígenesPermitidos = builder.Configuration.GetSection("Cors:Origins").Get<string[]>() ?? [];
@@ -71,11 +100,17 @@ using (var scope = app.Services.CreateScope())
     await Agendamiento.Api.Data.AgendamientoDbContext.SembrarCitasAsync(db);
 }
 
+if (!app.Environment.IsDevelopment() && claveJwt == claveJwtDesarrollo)
+    app.Logger.LogWarning("Jwt:Key usa la clave pública de desarrollo. Defina la variable de entorno Jwt__Key.");
+
+app.UseForwardedHeaders();
+
 // Swagger público en todos los entornos (demo del portafolio)
 app.UseSwagger();
 app.UseSwaggerUI();
 
 app.UseCors("Web");
+app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
 // Sin UseHttpsRedirection: el TLS lo termina Render/Cloudflare en el borde
@@ -90,13 +125,16 @@ api.MapPost("/auth/login", async (LoginRequest dto, AgendamientoDbContext db, To
         return Results.Unauthorized();
 
     return Results.Ok(tokens.Crear(usuario));
-}).AllowAnonymous();
+}).AllowAnonymous().RequireRateLimiting("login");
 
 // ---- Citas (CRUD) ----
 var citas = api.MapGroup("/citas").RequireAuthorization();
 
 citas.MapGet("/", async (AgendamientoDbContext db, EstadoCita? estado, DateTime? desde, DateTime? hasta) =>
 {
+    if (estado is not null && !Enum.IsDefined(estado.Value))
+        return Results.BadRequest(new { mensaje = "Estado no válido" });
+
     var query = db.Citas.AsNoTracking().AsQueryable();
     if (estado is not null) query = query.Where(c => c.Estado == estado);
     if (desde is not null) query = query.Where(c => c.FechaHora >= desde);
@@ -114,8 +152,8 @@ citas.MapGet("/{id:int}", async (int id, AgendamientoDbContext db) =>
 
 citas.MapPost("/", async (CrearCitaRequest dto, AgendamientoDbContext db) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.ClienteNombre) || string.IsNullOrWhiteSpace(dto.Servicio))
-        return Results.BadRequest(new { mensaje = "Cliente y servicio son obligatorios" });
+    if (ValidacionCita.Validar(dto.ClienteNombre, dto.ClienteTelefono, dto.Servicio, dto.Notas) is { } error)
+        return Results.BadRequest(new { mensaje = error });
     if (dto.FechaHora == default)
         return Results.BadRequest(new { mensaje = "Fecha y hora son obligatorias" });
 
@@ -135,8 +173,8 @@ citas.MapPost("/", async (CrearCitaRequest dto, AgendamientoDbContext db) =>
 
 citas.MapPut("/{id:int}", async (int id, ActualizarCitaRequest dto, AgendamientoDbContext db) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.ClienteNombre) || string.IsNullOrWhiteSpace(dto.Servicio))
-        return Results.BadRequest(new { mensaje = "Cliente y servicio son obligatorios" });
+    if (ValidacionCita.Validar(dto.ClienteNombre, dto.ClienteTelefono, dto.Servicio, dto.Notas) is { } error)
+        return Results.BadRequest(new { mensaje = error });
     if (!Enum.IsDefined(dto.Estado))
         return Results.BadRequest(new { mensaje = "Estado no válido" });
 

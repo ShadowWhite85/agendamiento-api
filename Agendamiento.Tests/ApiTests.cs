@@ -11,8 +11,14 @@ public class ApiFactory : WebApplicationFactory<Program>
     private readonly string _dbPath =
         Path.Combine(Path.GetTempPath(), $"agendamiento-test-{Guid.NewGuid():N}.db");
 
-    protected override void ConfigureWebHost(IWebHostBuilder builder) =>
+    /// <summary>Intentos de login por minuto. Alto por defecto para que los tests no choquen con el límite.</summary>
+    protected virtual int IntentosLogin => 1000;
+
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
         builder.UseSetting("ConnectionStrings:DefaultConnection", $"Data Source={_dbPath}");
+        builder.UseSetting("Seguridad:IntentosLoginPorMinuto", IntentosLogin.ToString());
+    }
 
     protected override void Dispose(bool disposing)
     {
@@ -108,5 +114,74 @@ public class ApiTests(ApiFactory factory) : IClassFixture<ApiFactory>
 
         var resp = await _client.DeleteAsync($"/api/citas/{cita!.Id}");
         Assert.Equal(HttpStatusCode.NoContent, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task CrearCita_SinTelefono_Return400()
+    {
+        Usar(await LoginAsync("recepcion@agendamiento.app", "recepcion123"));
+        var fecha = DateTime.Today.AddDays(2);
+
+        var nulo = await _client.PostAsJsonAsync("/api/citas", new { clienteNombre = "X", clienteTelefono = (string?)null, servicio = "Y", fechaHora = fecha });
+        var ausente = await _client.PostAsJsonAsync("/api/citas", new { clienteNombre = "X", servicio = "Y", fechaHora = fecha });
+
+        Assert.Equal(HttpStatusCode.BadRequest, nulo.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, ausente.StatusCode);
+    }
+
+    [Fact]
+    public async Task CrearCita_TextoDemasiadoLargo_Return400()
+    {
+        Usar(await LoginAsync("recepcion@agendamiento.app", "recepcion123"));
+
+        var resp = await _client.PostAsJsonAsync("/api/citas", new
+        {
+            clienteNombre = "X", clienteTelefono = "0999999999", servicio = "Y",
+            fechaHora = DateTime.Today.AddDays(2), notas = new string('a', 501)
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task ListarCitas_EstadoInexistente_Return400()
+    {
+        Usar(await LoginAsync("recepcion@agendamiento.app", "recepcion123"));
+
+        var resp = await _client.GetAsync("/api/citas?estado=99");
+
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+}
+
+public class LimiteLoginFactory : ApiFactory
+{
+    protected override int IntentosLogin => 2;
+}
+
+/// <summary>El límite de login se cuenta por IP real del visitante (X-Forwarded-For del proxy).</summary>
+public class LimiteLoginTests(LimiteLoginFactory factory) : IClassFixture<LimiteLoginFactory>
+{
+    private async Task<HttpStatusCode> IntentarAsync(HttpClient client, string ip)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Post, "/api/auth/login")
+        {
+            Content = JsonContent.Create(new { email = "admin@agendamiento.app", password = "incorrecta" })
+        };
+        req.Headers.Add("X-Forwarded-For", ip);
+        return (await client.SendAsync(req)).StatusCode;
+    }
+
+    [Fact]
+    public async Task Login_SuperaElLimite_Return429_SoloParaEsaIp()
+    {
+        var client = factory.CreateClient();
+
+        Assert.Equal(HttpStatusCode.Unauthorized, await IntentarAsync(client, "203.0.113.10"));
+        Assert.Equal(HttpStatusCode.Unauthorized, await IntentarAsync(client, "203.0.113.10"));
+        Assert.Equal(HttpStatusCode.TooManyRequests, await IntentarAsync(client, "203.0.113.10"));
+
+        // Otro visitante no queda bloqueado por los intentos del primero
+        Assert.Equal(HttpStatusCode.Unauthorized, await IntentarAsync(client, "198.51.100.20"));
     }
 }

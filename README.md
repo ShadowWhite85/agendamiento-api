@@ -15,7 +15,10 @@ API REST en **.NET 10** con **Minimal APIs**, EF Core 10 y SQLite.
 - **Autenticación JWT con roles:** la recepción crea/edita citas; solo el admin puede eliminar
 - **Swagger UI público** con botón *Authorize* para probar con token
 - **Seed de demostración:** 2 usuarios + 4 citas al primer arranque
-- **6 pruebas automatizadas** (xUnit + WebApplicationFactory) ejecutándose en cada push
+- **Seguridad:** clave JWT por variable de entorno (`Jwt__Key`), login limitado a 5 intentos
+  por minuto por IP real del visitante, validación de longitudes y campos obligatorios,
+  contenedor Docker sin privilegios de root
+- **10 pruebas automatizadas** (xUnit + WebApplicationFactory) ejecutándose en cada push
 
 ## 🔑 Credenciales de demostración
 

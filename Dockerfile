@@ -17,6 +17,11 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
 COPY --from=build /app/publish .
 
+# Sin privilegios de root: usuario 'app' que traen las imágenes de .NET (APP_UID).
+# Necesita escribir en /app porque ahí se crea la base SQLite.
+RUN chown -R $APP_UID:$APP_UID /app
+USER $APP_UID
+
 # Puerto interno estándar de contenedores .NET
 ENV ASPNETCORE_URLS=http://+:8080
 EXPOSE 8080
